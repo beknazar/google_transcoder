@@ -3,12 +3,15 @@ import websockets
 import json
 import threading
 from six.moves import queue
+
 from google.cloud import speech
 from google.cloud.speech import types
+from google.protobuf.json_format import MessageToJson
 
 
 IP = '0.0.0.0'
 PORT = 8000
+
 
 class Transcoder(object):
     """
@@ -21,23 +24,37 @@ class Transcoder(object):
         self.rate = rate
         self.closed = True
         self.transcript = None
+        self.alternative = {}
 
     def start(self):
         """Start up streaming speech call"""
         threading.Thread(target=self.process).start()
 
+    def process_response(self, alternative):
+        if not self.alternative:
+            self.alternative = alternative
+        else:
+            self.alternative['transcript'] += alternative['transcript']
+            self.alternative['words'].extend(alternative['words'])
+        print(self.alternative)
+        return True
+
     def response_loop(self, responses):
-        """
+        '''
         Pick up the final result of Speech to text conversion
-        """
+        '''
+        # print(responses)
         for response in responses:
             if not response.results:
                 continue
-            result = response.results[0]
-            if not result.alternatives:
+            response = json.loads(MessageToJson(response))
+            result = response['results'][0]
+            if not result['alternatives']:
                 continue
-            transcript = result.alternatives[0].transcript
-            if result.is_final:
+            alternative = result['alternatives'][0]
+            transcript = result['alternatives'][0]['transcript']
+            if result['isFinal']:
+                self.process_response(alternative)
                 self.transcript = transcript
 
     def process(self):
@@ -51,8 +68,9 @@ class Transcoder(object):
             encoding=self.encoding,
             sample_rate_hertz=self.rate,
             language_code=self.language,
+            enable_word_time_offsets=True,
             speech_contexts=[cap_speech_context,],
-            model='command_and_search'
+            model='default'
         )
         streaming_config = types.StreamingRecognitionConfig(
             config=config,
@@ -109,6 +127,8 @@ async def audio_processor(websocket, path):
     while True:
         try:
             data = await websocket.recv()
+            if data == 'stop':
+                break
         except websockets.ConnectionClosed:
             print("Connection closed")
             break
